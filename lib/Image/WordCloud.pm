@@ -9,7 +9,6 @@ use Image::WordCloud::StopWords::EN qw(%STOP_WORDS);
 use Carp qw(carp croak confess);
 use Params::Validate qw(:all);
 use List::Util qw(sum shuffle);
-use Data::Types qw(:int :float);
 use File::Spec;
 use File::ShareDir qw(:ALL);
 use File::Find::Rule;
@@ -18,66 +17,97 @@ use GD::Text::Align;
 use Color::Scheme;
 use Math::PlanePath::TheodorusSpiral;
 
+our $VERSION = '0.01';
+
 
 =head1 NAME
 
 Image::WordCloud - Create word cloud images
 
-=head1 VERSION
-
-Version 0.01_01
-
-=cut
-
-our $VERSION = '0.01_01';
-
-
 =head1 SYNOPSIS
 
-Create "word cloud" images out of a set of specified words. Font size indicates the frequency with which a word is used. Colors are generated randomly. Fonts can be
-specified or chosen randomly.
+	use Image::WordCloud;
+	use File::Slurp;
+	
+	my $wc = Image::WordCloud->new();
+	
+	# Add the Gettysburg Address
+	my $text = read_file('script/gettysburg.txt');
+	$wc->words($text);
+	
+	# Create the word cloud as a GD image
+	my $gd = $wc->cloud();
+	
+	open(my $fh, '>', 'gettysburg.png');
+		binmode $fh;
+		print $fh $gd->png();
+	close($fh);
+	
+	# See examples/gettysburg.png for how the created image looks. script/gettysburg.pl will create it
+	
+	# The calls can also be chained like so:
+	my $text = read_file('script/gettysburg.txt');
+	my $gd = Image::WordCloud->new()
+		->words($text)
+		->cloud();
 
-Perhaps a little code snippet.
+Create "word cloud" images from a set of specified words, similar to http://wordle.net.
+Font size indicates the frequency with which a word is used.
 
-    use Image::WordCloud;
+Colors are generated randomly using L<Color::Scheme>. Fonts can be specified or chosen randomly.
 
-    my $wc = Image::WordCloud->new();
-    
-    # Add the Gettysburg Address
-    $wc->words([qw/
-    		Four score and seven years ago our fathers brought forth on this continent a new nation conceived in Liberty and dedicated to the proposition that all men are created equal
-				Now we are engaged in a great civil war testing whether that nation or any nation so conceived and so dedicated can long endure We are met on a great battle field of that
-				war We have come to dedicate a portion of that field as a final resting place for those who here gave their lives that that nation might live It is altogether fitting and
-				proper that we should do this But in a larger sense we can not dedicate—we can not consecrate—we can not hallow—this ground The brave men living and dead who struggled
-				here have consecrated it far above our poor power to add or detract The world will little note nor long remember what we say here but it can never forget what they did here
-				It is for us the living rather to be dedicated here to the unfinished work which they who fought here have thus far so nobly advanced It is rather for us to be here dedicated
-				to the great task remaining before us—that from these honored dead we take increased devotion to that cause for which they here gave the last full measure of devotion—that we
-				here highly resolve that these dead shall not have died in vain—that this nation under God shall have a new birth of freedom—and that government of the people by the people
-				for the people shall not perish from the earth
-		/]);
-		
-		# Create the word cloud as a GD image
-		my $gd = $wc->cloud();
-		
-		open(my $fh, '>', 'gettysburg.png');
-			binmode $fh;
-			print $fh $gd->png();
-		close($fh);
-		
-		# See examples/gettysburg.png for how the created image looks. script/gettysburg.pl will create it
+=head1 FUNCTIONS
 
-=head1 SUBROUTINES/METHODS
+=head2 new( ... )
 
-=head2 new()
+Accepts a number of parameters to alter the image look.
+
+=over 4
+
+=item * image_size => [$x, $y]
+
+Sets the size of the image in pixels, accepts an arrayref. Defaults to [400, 400].
+
+NOTE: Non-square images currently can look a little squirrely due to how Math::TheodorusSpiral fills a rectangle.
+
+=item * word_count => $count
+
+Number of words to show on the image. Defaults to 70.
+
+=item * prune_boring => <1,0>
+
+Prune "boring", or "stop" words. This module currently only supports English stop words (like 'the', 'a', 'and', 'but').
+The full list is in L<Image::WordCloud::StopWords::EN>
+
+Defaults to true.
+
+=item * font => $name
+
+Name of font to use. This is passed directly to L<GD::Text::Align> so it can either be a string like 'arial', or
+a full path. However in order for non-path font names to work, L<GD> needs an environment variable like FONT_PATH
+or FONT_TT_PATH to be set, or C<font_path> can be used to set it manually.
+
+=item * font_path => $path_to_fonts
+
+Set where your font .ttf files are located. If this is not specified, the path of this module's distribution
+directory will be used via L<File::ShareDir>. Currently this module comes bundled with one set of fonts.
+
+=item * background => [$r, $g, $b]
+
+Takes an arrayref defining the background color to use. Defaults to [40, 40, 40]
+
+=back
 
 =cut
+
+#'
 
 sub new {
     my $proto = shift;
 		
     my %opts = validate(@_, {
     	  image_size     => { type => ARRAYREF | UNDEF, optional => 1, default => [400, 400] },
-        word_count     => { type => SCALAR | UNDEF,   optional => 1 },
+        word_count     => { type => SCALAR | UNDEF,   optional => 1, default => 70 },
         prune_boring   => { type => SCALAR | UNDEF,   optional => 1, default => 1 },
         font           => { type => SCALAR | UNDEF,   optional => 1 },
         font_file      => { type => SCALAR | UNDEF,   optional => 1 },
@@ -86,7 +116,6 @@ sub new {
     });
     
     # ***TODO: Figure out how many words to use based on image size?
-    $opts{'word_count'} ||= 70;
 		
 		# Make sure the font file exists if it is specified
 		if ($opts{'font_file'}) {
@@ -166,13 +195,17 @@ sub _get_dist_file_option {
 	return;
 }
 
-=head2 words(\%words_to_use | \@words | @words_to_use)
+=head2 words(\%words_to_use | \@words | @words_to_use, $words)
 
-Set up hashref \%words_to_use as the words we build the word cloud from.
+Takes either a hashref, arrayref, array or string.
 
-Keys are the words, values are their count.
+If the argument is a hashref, keys are the words, values are their count. No further processing is done (we assume you've done it on your own).
+
+If the argument is an array, arrayref, or string, the words are parsed to remove non-word characters and turn them lower-case.
 
 =cut
+
+#'
 
 sub words {
 	my $self = shift;
@@ -188,26 +221,41 @@ sub words {
   
   my %words = ();
   
-  # Argument is a hashref, just push it straight into %words
-  if (ref($arg1) eq 'HASH') {
-  	%words = %{ $arg1 };
-	}
-	else {
-		# Argument is an arrayref, strip non-word characters, lc() each word and build the counts
-		my @words = ();
-		if (ref($arg1) eq 'ARRAY') {
-			@words = @$arg1;
-		}
-		# Assume it's a straight array
-		else {
-			@words = @_;
-		}
-		
-		foreach my $word (map { lc } @words) {
+ 	# More than one argument, assume we're being passed a list of words
+  if (scalar(@_) > 1) {
+  	my @words = @_;
+  	
+  	# Strip non-word characters, lc() each word and build the counts
+  	foreach my $word (map { lc } @words) {
 			$word =~ s/\W//o;
 			$words{ $word }++;
 		}
-	}
+  }
+  else {
+  	# Argument is a hashref, just push it straight into %words
+	  if (ref($arg1) eq 'HASH') {
+	  	%words = %{ $arg1 };
+		}
+		# Argument is an arrayref
+		elsif (ref($arg1) eq 'ARRAY') {
+			my @words = @$arg1;
+			
+			# Strip non-word characters, lc() each word and build the counts
+			foreach my $word (map { lc } @words) {
+				$word =~ s/\W//o;
+				$words{ $word }++;
+			}
+		}
+		# Argument is a scalar, assume it's a string of words
+		else {
+			my $words = $arg1;
+			while ($words =~ /(?<!<)\b([\w\-']+)\b(?!>)/g) { #' <-- so UltraEdit doesnt fubar syntax highliting
+				my $word = lc($1);
+				$word =~ s/\W//o;
+				$words{ $word }++;
+			}
+		}
+  }
   
   # Blank out the current word list;
   $self->{words} = {};
@@ -241,7 +289,7 @@ sub words {
 
 =head2 cloud()
 
-Make the word cloud. Returns a L<GD> image object
+Make the word cloud. Returns a L<GD::Image> image object.
 
 =cut
 
@@ -629,7 +677,7 @@ sub add_stop_words {
 	my @words = @_;
 	
 	foreach my $word (@words) {
-		$self->{stop_words}->{ lc($word) } = 1;
+		$STOP_WORDS{ lc($word) } = 1;
 	}
 		
 	return $self;
@@ -721,9 +769,6 @@ L<http://cpanratings.perl.org/d/Image-WordCloud>
 L<http://search.cpan.org/dist/Image-WordCloud/>
 
 =back
-
-
-=head1 ACKNOWLEDGEMENTS
 
 
 =head1 LICENSE AND COPYRIGHT
