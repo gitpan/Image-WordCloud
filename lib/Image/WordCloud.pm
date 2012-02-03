@@ -17,7 +17,7 @@ use GD::Text::Align;
 use Color::Scheme;
 use Math::PlanePath::TheodorusSpiral;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02_01';
 
 
 =head1 NAME
@@ -43,7 +43,8 @@ Image::WordCloud - Create word cloud images
 		print $fh $gd->png();
 	close($fh);
 	
-	# See examples/gettysburg.png for how the created image looks. script/gettysburg.pl will create it
+	# See examples/gettysburg.png for how the created image looks.
+	# script/gettysburg.pl will create it
 	
 	# The calls can also be chained like so:
 	my $text = read_file('script/gettysburg.txt');
@@ -106,13 +107,13 @@ sub new {
     my $proto = shift;
 		
     my %opts = validate(@_, {
-    	  image_size     => { type => ARRAYREF | UNDEF, optional => 1, default => [400, 400] },
-        word_count     => { type => SCALAR | UNDEF,   optional => 1, default => 70 },
-        prune_boring   => { type => SCALAR | UNDEF,   optional => 1, default => 1 },
-        font           => { type => SCALAR | UNDEF,   optional => 1 },
-        font_file      => { type => SCALAR | UNDEF,   optional => 1 },
-        font_path      => { type => SCALAR | UNDEF,   optional => 1 },
-        background     => { type => ARRAYREF,         optional => 1, default => [40, 40, 40] },
+			image_size     => { type => ARRAYREF | UNDEF, optional => 1, default => [400, 400] },
+			word_count     => { type => SCALAR | UNDEF,   optional => 1, default => 70 },
+			prune_boring   => { type => SCALAR | UNDEF,   optional => 1, default => 1 },
+			font           => { type => SCALAR | UNDEF,   optional => 1 },
+			font_file      => { type => SCALAR | UNDEF,   optional => 1 },
+			font_path      => { type => SCALAR | UNDEF,   optional => 1 },
+			background     => { type => ARRAYREF,         optional => 1, default => [40, 40, 40] },
     });
     
     # ***TODO: Figure out how many words to use based on image size?
@@ -120,7 +121,7 @@ sub new {
 		# Make sure the font file exists if it is specified
 		if ($opts{'font_file'}) {
 			unless (-f $opts{'font_file'}) {
-				carp sprintf "Font file '%s' not found", $opts{'font_file'};
+				carp sprintf "Specified font file '%s' not found", $opts{'font_file'};
 			}
 		}
 		
@@ -156,14 +157,14 @@ sub new {
 		
     my $class = ref( $proto ) || $proto;
     my $self = { #Will need to allow for params passed to constructor
-			words          => {},
-			image_size     => $opts{'image_size'},
-      word_count     => $opts{'word_count'},
-      prune_boring   => $opts{'prune_boring'},
-      font           => $opts{'font'}      || "",
-      font_path      => $opts{'font_path'} || "",
-      font_file      => $opts{'font_file'} || "",
-      background		 => $opts{'background'},
+			words					=> {},
+			image_size		=> $opts{'image_size'},
+			word_count		=> $opts{'word_count'},
+			prune_boring	=> $opts{'prune_boring'},
+			font					=> $opts{'font'}      || "",
+			font_path			=> $opts{'font_path'} || "",
+			font_file			=> $opts{'font_file'} || "",
+			background		=> $opts{'background'},
     };
     bless($self, $class);
     
@@ -177,25 +178,19 @@ sub new {
 		}
 		# Otherwise if no font_file was specified and we have a font path, read in all the fonts from font_path
 		elsif (! -f $self->{'font_file'} && -d $self->{'font_path'}) {
-				my @fonts = File::Find::Rule->new()
-					->extras({ untaint => 1})
-					->file()
-					->name('*.ttf')
-					->in( $self->{'font_path'} );
+			my @fonts = File::Find::Rule->new()
+										->extras({ untaint => 1})
+										->file()
+										->name('*.ttf')
+										->in( $self->{'font_path'} );
+			
 			$self->{fonts} = \@fonts;
 		}
 
     return $self;
 }
 
-# Get a file from the dist share location
-sub _get_dist_file_option {
-	my ($opts, $option, $file) = @_;
-	
-	return;
-}
-
-=head2 words(\%words_to_use | \@words | @words_to_use, $words)
+=head2 words(\%words_to_use | \@words | @words_to_use | $words)
 
 Takes either a hashref, arrayref, array or string.
 
@@ -225,8 +220,8 @@ sub words {
   if (scalar(@_) > 1) {
   	my @words = @_;
   	
-  	# Strip non-word characters, lc() each word and build the counts
-  	foreach my $word (map { lc } @words) {
+		# Strip non-word characters, lc() each word and build the counts
+		foreach my $word (map { lc } @words) {
 			$word =~ s/\W//o;
 			$words{ $word }++;
 		}
@@ -289,7 +284,21 @@ sub words {
 
 =head2 cloud()
 
-Make the word cloud. Returns a L<GD::Image> image object.
+Make the word cloud. Returns a L<GD::Image>.
+
+	my $gd = Image::WordCloud->new()->words(qw/some words etc/)->cloud();
+	
+	# Spit out the wordlcoud as a PNG
+	$gd->png;
+	
+	# ... or a jpeg
+	$gd->jpg;
+	
+	# Get the dimensions
+	$gd->width;
+	$gd->height;
+	
+	# Or anything else you can do with a GD::Image object
 
 =cut
 
@@ -320,15 +329,16 @@ sub cloud {
 		push @palette, $newc;
 	}
 	
-	# make the background interlaced  
+	# make the background interlaced (***TODO: why?)
   $gd->interlaced('true');
 	
 	# Array of GD::Text::Align objects that we will move around and then draw
 	my @texts = ();
 	
 	# Max font size in points (25% of image height)
-	my $max_points = ($gd->height * 72 / 96) * .25; # Convert height in pixels to points, then take 25% of that number
-	my $min_points = ($gd->height * 72 / 96) * 0.0175; # 0.02625; 
+	#my $max_points = $self->_pixels_to_points($gd->height) * .25; # Convert height in pixels to points, then take 25% of that number
+	my $max_points = $self->_max_font_size();
+	my $min_points = $self->_pixels_to_points($gd->height) * 0.0175; # 0.02625; 
 	
 	# Scaling modifier for font sizes
 	my $max_count = $self->{max_count};
@@ -337,7 +347,15 @@ sub cloud {
 	# For each word we have
 	my @areas = ();
 	#my @drawn_texts = ();
+	
+	# List of the bounding boxes of each text object. Each element is an arrayref
+	# containing:
+	#   1. Upper left x coordinate
+	#   2. Upper left y coordinate
+	#   3. Bounding box width
+	#   4. Bounding box height
 	my @bboxes = ();
+	
 	my $loop = 1;
 	
 	my @word_keys = sort { $self->{words}->{$b} <=> $self->{words}->{$a} } keys %{ $self->{words} };
@@ -417,13 +435,16 @@ sub cloud {
 			$y = $center_y + ($h / 4); # I haven't done the math see why dividing the height by 4 works, but it does
 			
 			# Move the image center around a little
-			$x += $self->_random_int_between($gd->width * .1 * -1, $gd->width * .1 );
-			$y += $self->_random_int_between($gd->height * .1 * -1, $gd->height * .1);
+			#$x += $self->_random_int_between($gd->width * .1 * -1, $gd->width * .1 );
+			#$y += $self->_random_int_between($gd->height * .1 * -1, $gd->height * .1);
+			
+			# Move the first word around a little, but not TOO much!
+			($x, $y) = $self->_init_coordinates($gd, $text, $x, $y);
 		}
 		else {
 			# Get a random place to draw the text
 			#   1. The text is drawn starting at its lower left corner
-			#	2. So we need to push the y value by the height of the text, but keep it less than the image height
+			#	  2. So we need to push the y value by the height of the text, but keep it less than the image height
 			#   3. Keep a padding of 5px around the edges of the image
 			#$y = $self->_random_int_between($h, $gd->height - 5);
 			#$x = $self->_random_int_between(5,  $gd->width - $w - 5);
@@ -438,8 +459,10 @@ sub cloud {
 			# Make a spiral, TODO: probably need to somehow constrain or filter points that are generated outside the image dimensions
 			my $path = Math::PlanePath::TheodorusSpiral->new;
 			
-			# Get the initial starting point
+			# Get the boundary width and height for random initial placement (which is bounds of the first (biggest) string)
 			my ($rand_bound_w, $rand_bound_h) = @{$bboxes[0]}[2,3];
+			
+			# Get the initial starting point
 			#my ($this_x, $this_y) = $path->n_to_xy(1);
 			my ($this_x, $this_y) = $self->_new_coordinates($gd, $path, 1, $rand_bound_w, $rand_bound_h);
 			
@@ -549,14 +572,64 @@ sub cloud {
 	return $gd;
 }
 
+# Given an initial starting point, move 
+sub _init_coordinates {
+	my $self = shift;
+	my ($gd, $text, $x, $y) = @_;
+	
+	croak "No X coordinate specified" if ! defined $x;
+	croak "No Y coordinate specified" if ! defined $y;
+	
+	my $fits = 0;
+	my $c = 0;
+	while (! $fits) {
+		# Re-initialize the coords
+		my $try_x = $x;
+		my $try_y = $y;
+		
+		# Move the x,y coords around a little (width 10% of the image's dimensions so we stay mostly centered)
+		$try_x += $self->_random_int_between($gd->width * .1 * -1, $gd->width * .1 );
+		$try_y += $self->_random_int_between($gd->height * .1 * -1, $gd->height * .1);
+		
+		# Make sure the new coordinates aren't outside the bounds of the image!
+		my ($newx, $newy, $newx2, $newy2) = ( $text->bounding_box($try_x, $try_y) )[6,7,2,3];
+		
+		if ($newx < 0 || $newx2 > $gd->width ||
+				$newy < 0 || $newy2 > $gd->height) {
+				
+				$fits = 0;
+		}
+		else {
+				$x = $try_x;
+				$y = $try_y;
+				
+				$fits = 1;
+		}
+		
+		# Only try 50 times
+		$c++;
+		last if $c > 50;
+	}
+	
+	return ($x, $y);
+}
+
 # Return new coordinates ($x, $y) that are no more than $bound_x or $bound_y digits away from the center of GD image $gd
 sub _new_coordinates {
 	my $self = shift;
 	
-	my ($gd, $path, $iteration, $bound_x, $bound_y) = @_;
+	my @opts = validate_pos(@_,
+  	{ isa => 'GD::Image' },
+  	{ isa => 'Math::PlanePath::TheodorusSpiral' },
+  	{ type => SCALAR, regex => qr/^[-+]?\d+$/, },
+  	{ type => SCALAR, regex => qr/^\d+|\d+\.\d+$/, },
+  	{ type => SCALAR, regex => qr/^\d+|\d+\.\d+$/, },
+  );
+	
+	my ($gd, $path, $iteration, $bound_x, $bound_y) = @opts;
 	
 	my ($x, $y) = map { int } $path->n_to_xy($iteration * 100); # use 'int' because it returns fractional coordinates
-					
+	
 	# Move the center of this word within 50% of the area of the first word's bounding box
 	$x += $self->_random_int_between($bound_x * -1 * .25, $bound_x * .25);
 	$y += $self->_random_int_between($bound_y * -1 * .25, $bound_y * .25);
@@ -567,21 +640,119 @@ sub _new_coordinates {
 	return ($x, $y);
 }
 
-sub _exp2 {
-	my $n = shift;
-	return exp($n) / exp(2);
-}
-
-sub _log2 {
-	my $n = shift;
-	return log($n) / log(2);
-}
-
-sub _normalize_num {
+# Return the maximum font-size this image can use
+sub _max_font_size {
 	my $self = shift;
-	my ($num, $max, $min) = @_;
 	
-	return ($num - $min) / ($max - $min);
+	# Font size we'll return (start with 25% of the image height);
+	my $fontsize = $self->_init_max_font_size();
+	
+	# Get the smallest side of the image
+	#my $min_edge_px = $self->{image_size}->[0] < $self->{image_size}->[1] ? $self->{image_size}->[0] : $self->{image_size}->[1];
+	#my $min_points = $self->pixels_to_points($min_edge_px);
+	
+	# Image width and heigth
+	my ($w, $h) = $self->{image_size}->[0,1];
+	
+	# Get the longest word
+	my $max_word = "";
+	foreach my $word (keys %{ $self->{words} }) {
+		$max_word = $word if length($word) > length($max_word);
+	}
+	
+	# Create the text object
+	my $t = new GD::Text::Align(new GD::Image);
+	$t->set_text($max_word);
+	
+	# Get every possible font we can use
+	my @fonts = $self->_get_all_fonts();
+	
+	while ($fontsize > 0) {
+		my $toobig = 0;
+		
+		# Go through every font
+		foreach my $font (@fonts) {
+			# Set the font on this text object
+			$t->set_font($font, $fontsize);
+			
+			# The text box is wider than the image
+			if ($t->get('width') > $w) {
+				$toobig = 1;
+				last;
+			}
+		}
+		
+		last if ! $toobig;
+		
+		$fontsize--;
+	}
+	
+	return $fontsize;
+}
+
+# Intial maximum font size is the 1/4 the heigth of the image
+sub _init_max_font_size {
+	my $self = shift;
+	return $self->_pixels_to_points($self->{image_size}->[1] * .25);
+}
+
+# Return a single font
+sub _get_font {
+	my $self = shift;
+	
+	my $font = "";
+	
+	# From a font file
+	if ($self->{'font_file'}) {
+		$font = $self->{'font_file'};
+	}
+	# Or the specified font
+	elsif ($self->{'font'} && -d $self->{'font_path'}) {
+		$font = $self->{'font'};
+	}
+	# ...or use a random font
+	elsif (scalar @{$self->{'fonts'}} > 0) {
+		$font = $self->{'fonts'}->[ rand @{$self->{'fonts'}} ];
+			unless (-f $font) { carp "Font file '$font' not found"; }
+	}
+	
+	return $font;
+}
+
+# Get all fonts we can possibly use
+sub _get_all_fonts {
+	my $self = shift;
+	
+	my @fonts = ();
+	if ($self->{'font_file'}) {
+		@fonts = ($self->{'font_file'});
+	}
+	# Or the specified font
+	elsif ($self->{'font'} && -d $self->{'font_path'}) {
+		@fonts = ($self->{'font'});
+	}
+	# ...or use a random font
+	elsif (scalar @{$self->{'fonts'}} > 0) {
+		@fonts = @{$self->{'fonts'}};
+	}
+	
+	return @fonts;
+}
+
+# Given a number of pixels return the value in points (font size)
+sub _pixels_to_points {
+	my $self = shift;
+	my $pixels = shift;
+	
+	return $pixels * 72 / 96;
+}
+
+# Given a number of points return the value in pixels
+sub _points_to_pixels {
+	my $self = shift;
+	my $points = shift;
+	
+	return $points * 96 / 72;
 }
 
 # Return a list of random colors as an array of RGB arrayrefs
@@ -602,35 +773,6 @@ sub _random_colors {
 		->colors();
 		
 	return @rand_colors;
-}
-
-# Convert HSV colors to RGB, in a pretty way
-# Stolen from: http://martin.ankerl.com/2009/12/09/how-to-create-random-colors-programmatically/
-sub _hsv_to_rgb {
-	my $self = shift;
-	
-	my ($h, $s, $v) = @_;
-	
-	my $h_i = int($h * 6);
-	my $f = $h * 6 - $h_i;
-	my $p = $v * (1 - $s);
-	my $q = $v * (1 - $f * $s);
-	my $t = $v * (1 - (1 - $f) * $s);
-	
-	my ($r, $g, $b);
-	
-	($r, $g, $b) = ($v, $t, $p) if $h_i == 0;
-	($r, $g, $b) = ($q, $v, $p) if $h_i == 1;
-	($r, $g, $b) = ($p, $v, $t) if $h_i == 2;
-	($r, $g, $b) = ($p, $q, $v) if $h_i == 3;
-	($r, $g, $b) = ($t, $p, $v) if $h_i == 4;
-	($r, $g, $b) = ($v, $p, $q) if $h_i == 5;
-	
-	return (
-		int($r * 256),
-		int($g * 256),
-		int($b * 256)
-	);
 }
 
 # Convert a hexadecimal color to a list of rgb values
@@ -684,6 +826,16 @@ sub add_stop_words {
 }
 
 # Detect a collision between two rectangles
+#   Arguments are:
+#		1: First rectangle's upper left X coord
+#		2: First rectangle's upper left Y coord
+#		3: First rectangle's width
+#		4: First rectangle's height
+#
+#		1: Second rectangle's upper left X coord
+#		2: Second rectangle's upper left Y coord
+#		3: Second rectangle's width
+#		4: Second rectangle's height
 sub _detect_collision {
 	my $self = shift;
 	
@@ -728,18 +880,15 @@ sub _random_int_between {
 	return $min + int rand(1 + $max - $min);
 }
 
+
 =head1 AUTHOR
 
-Brian Hann, C<< <brian.hann at gmail.com> >>
+Brian Hann, C<< <bhann at cpan.org> >>
 
 =head1 BUGS
 
-Please report any bugs or feature requests to C<bug-image-wordcloud at rt.cpan.org>, or through
-the web interface at L<http://rt.cpan.org/NoAuth/ReportBug.html?Queue=Image-WordCloud>.  I will be notified, and then you'll
-automatically be notified of progress on your bug as I make changes.
-
-
-
+Please report any bugs or feature requests here L<https://github.com/c0bra/image-wordcloud-perl/issues>. 
+I will be notified, and then you'll automatically be notified of progress on your bug as I make changes.
 
 =head1 SUPPORT
 
@@ -752,9 +901,9 @@ You can also look for information at:
 
 =over 4
 
-=item * RT: CPAN's request tracker (report bugs here)
+=item * Github Issues Tracker (report bugs here)
 
-L<http://rt.cpan.org/NoAuth/Bugs.html?Dist=Image-WordCloud>
+L<https://github.com/c0bra/image-wordcloud-perl/issues>
 
 =item * AnnoCPAN: Annotated CPAN documentation
 
@@ -767,6 +916,10 @@ L<http://cpanratings.perl.org/d/Image-WordCloud>
 =item * Search CPAN
 
 L<http://search.cpan.org/dist/Image-WordCloud/>
+
+=item * MetaCPAN
+
+L<https://metacpan.org/module/Image::WordCloud>
 
 =back
 
