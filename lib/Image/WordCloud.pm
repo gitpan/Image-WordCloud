@@ -17,8 +17,9 @@ use GD::Text::Align;
 use Color::Scheme;
 use Math::PlanePath::TheodorusSpiral;
 
-our $VERSION = '0.02_01';
+our $VERSION = '0.02_03';
 
+$ENV{IWC_DEBUG} = 0 if ! defined $ENV{IWC_DEBUG} || ! $ENV{IWC_DEBUG};
 
 =head1 NAME
 
@@ -97,6 +98,21 @@ directory will be used via L<File::ShareDir>. Currently this module comes bundle
 
 Takes an arrayref defining the background color to use. Defaults to [40, 40, 40]
 
+=item * border_padding => <$pixels | $percent>
+
+Padding to leave clear around the edges of the image, either in pixels or a percent with '%' sign. Defaults to '5%'
+
+	my $wc = Image::WordCloud->new(border_padding => 20);
+	my $wc = Image::WordCloud->new(border_padding => '25%');
+
+Please note that this affects the speed with which this module can fit words into the image. In my tests on
+the text of the Declaration of Independence, bumping the percentage by 5% increments progressed like so:
+
+	0%:  15.25s
+	5%:  21.50s
+	10%: 30.00s
+	15%: 63.6s avg
+
 =back
 
 =cut
@@ -107,13 +123,14 @@ sub new {
     my $proto = shift;
 		
     my %opts = validate(@_, {
-			image_size     => { type => ARRAYREF | UNDEF, optional => 1, default => [400, 400] },
-			word_count     => { type => SCALAR | UNDEF,   optional => 1, default => 70 },
-			prune_boring   => { type => SCALAR | UNDEF,   optional => 1, default => 1 },
-			font           => { type => SCALAR | UNDEF,   optional => 1 },
-			font_file      => { type => SCALAR | UNDEF,   optional => 1 },
-			font_path      => { type => SCALAR | UNDEF,   optional => 1 },
-			background     => { type => ARRAYREF,         optional => 1, default => [40, 40, 40] },
+			image_size     => { type => ARRAYREF | UNDEF, 		optional => 1, default => [400, 400] },
+			word_count     => { type => SCALAR | UNDEF,   		optional => 1, default => 70 },
+			prune_boring   => { type => SCALAR | UNDEF,   		optional => 1, default => 1 },
+			font           => { type => SCALAR | UNDEF,   		optional => 1 },
+			font_file      => { type => SCALAR | UNDEF,   		optional => 1 },
+			font_path      => { type => SCALAR | UNDEF,   		optional => 1 },
+			background     => { type => ARRAYREF,         		optional => 1, default => [40, 40, 40] },
+			border_padding => { type => SCALAR, 							optional => 1, regex => qr/^\d+\%?$/, default => '5%' },
     });
     
     # ***TODO: Figure out how many words to use based on image size?
@@ -131,8 +148,19 @@ sub new {
 				carp sprintf "Specified font path '%s' not found", $opts{'font_path'};
 			}
 		}
-		# Otherwise, find the font path with File::ShareDir
-		else {
+		
+		# Otherwise, try using ./share/fonts (so testing can be done)
+		if (! $opts{'font_path'}) {
+			my $local_font_path = File::Spec->catdir(".", "share", "fonts");
+			unless (-d $local_font_path) {
+				#carp sprintf "Local font path '%s' not found", $local_font_path;
+			}
+			
+			$opts{'font_path'} = $local_font_path;
+		}
+		
+		# If we still haven't found a font path, find the font path with File::ShareDir
+		if (! $opts{'font_path'}) {
 			my $font_path;
 			eval {
 				$font_path = File::Spec->catdir(dist_dir('Image-WordCloud'), "fonts");
@@ -145,26 +173,17 @@ sub new {
 			}
 		}
 		
-		# If we still haven't found a font path, try using ./share/fonts
-		if (! $opts{'font_path'}) {
-			my $local_font_path = File::Spec->catdir(".", "share", "fonts");
-			unless (-d $local_font_path) {
-				#carp sprintf "Local font path '%s' not found", $local_font_path;
-			}
-			
-			$opts{'font_path'} = $local_font_path;
-		}
-		
     my $class = ref( $proto ) || $proto;
     my $self = { #Will need to allow for params passed to constructor
-			words					=> {},
-			image_size		=> $opts{'image_size'},
-			word_count		=> $opts{'word_count'},
-			prune_boring	=> $opts{'prune_boring'},
-			font					=> $opts{'font'}      || "",
-			font_path			=> $opts{'font_path'} || "",
-			font_file			=> $opts{'font_file'} || "",
-			background		=> $opts{'background'},
+			words					 => {},
+			image_size		 => $opts{'image_size'},
+			word_count		 => $opts{'word_count'},
+			prune_boring	 => $opts{'prune_boring'},
+			font					 => $opts{'font'}      || "",
+			font_path			 => $opts{'font_path'} || "",
+			font_file			 => $opts{'font_file'} || "",
+			background		 => $opts{'background'},
+			border_padding => $opts{'border_padding'},
     };
     bless($self, $class);
     
@@ -185,6 +204,11 @@ sub new {
 										->in( $self->{'font_path'} );
 			
 			$self->{fonts} = \@fonts;
+		}
+		
+		# Set the font path for GD::Text::* objects, if we have one to use
+		if (-d $self->{'font_path'}) {
+			GD::Text->font_path( $self->{'font_path'} );
 		}
 
     return $self;
@@ -244,7 +268,7 @@ sub words {
 		# Argument is a scalar, assume it's a string of words
 		else {
 			my $words = $arg1;
-			while ($words =~ /(?<!<)\b([\w\-']+)\b(?!>)/g) { #' <-- so UltraEdit doesnt fubar syntax highliting
+			while ($words =~ /(?<!<)\b([\w\-']+)\b(?!>)/go) { #' <-- so UltraEdit doesnt fubar syntax highliting
 				my $word = lc($1);
 				$word =~ s/\W//o;
 				$words{ $word }++;
@@ -279,6 +303,8 @@ sub words {
   	$word_count++;
   }
   
+  $self->{words_changed} = 1;
+  
   return $self;
 }
 
@@ -306,18 +332,22 @@ sub cloud {
 	my $self = shift;
 	
 	# Set the font path for GD::Text::* objects, if we have one to use
-	if (-d $self->{'font_path'}) {
-		GD::Text->font_path( $self->{'font_path'} );
-	}
+	#if (-d $self->{'font_path'}) {
+	#	GD::Text->font_path( $self->{'font_path'} );
+	#}
 	
 	# Create the image object 
-	my $gd = GD::Image->new($self->{image_size}->[0], $self->{image_size}->[1]); # Adding the 3rd argument (for truecolor) borks the background, it defaults to black.
+	my $gd = GD::Image->new($self->width, $self->height, 1); # Adding the 3rd argument (for truecolor) borks the background, it defaults to black.
 	
 	# Center coordinates of this iamge
 	my $center_x = $gd->width  / 2;
 	my $center_y = $gd->height / 2;
 	
-	my $gray  = $gd->colorAllocate( @{$self->{background}}[0,1,2] ); # Background color, gray
+	my $background = $gd->colorAllocate( @{$self->{background}}[0,1,2] ); # Background color
+	
+	# Fill completely with background color
+	$gd->filledRectangle(0, 0, $gd->width, $gd->height, $background);
+	
 	my $white = $gd->colorAllocate(255, 255, 255);
 	my $black = $gd->colorAllocate(0, 0, 0);
 	
@@ -335,10 +365,17 @@ sub cloud {
 	# Array of GD::Text::Align objects that we will move around and then draw
 	my @texts = ();
 	
-	# Max font size in points (25% of image height)
-	#my $max_points = $self->_pixels_to_points($gd->height) * .25; # Convert height in pixels to points, then take 25% of that number
+	# Get the bounds of the image
+	my ($left_bound, $top_bound, $right_bound, $bottom_bound) = $self->_image_bounds();
+	
+	# Max an min font sizes in points
 	my $max_points = $self->_max_font_size();
-	my $min_points = $self->_pixels_to_points($gd->height) * 0.0175; # 0.02625; 
+	#my $min_points = $self->_pixels_to_points(($bottom_bound - $top_bound) * 0.0175); # 0.02625;
+	my $min_points = $self->_min_font_size();
+	
+	# Get the view scaling based on the area we can fill and what all the areas of
+	#   the words at their scaled font sizes would produce
+	my $view_scaling = $self->_view_scaling();
 	
 	# Scaling modifier for font sizes
 	my $max_count = $self->{max_count};
@@ -358,7 +395,19 @@ sub cloud {
 	
 	my $loop = 1;
 	
+	# Get a list of words sorted by frequency
 	my @word_keys = sort { $self->{words}->{$b} <=> $self->{words}->{$a} } keys %{ $self->{words} };
+	
+	# Get the word scaling factors (higher frequency == bigger size
+	my $scalings = $self->_word_scalings();
+	
+	# And then create the font sizes based on the scaling * the maximum font size
+	
+	#   Get the initial font sizes
+	my $word_sizes = $self->_word_font_sizes();
+	
+	#   Scale the sizes by the view scaling
+	my %word_sizes = map { $_ => $word_sizes->{$_} * $view_scaling } keys %$word_sizes;
 	
 	# Get the font size for each word using the Fibonacci sequence
 #	my %word_sizes = ();
@@ -380,8 +429,6 @@ sub cloud {
 #		
 #		$sloop--;
 #	}
-	my $sloop = 0;
-	my %word_sizes = map { $sloop++; $_ => (1.75 / $sloop * $max_points) } @word_keys;
 	
 	foreach my $word ( shift @word_keys, shuffle @word_keys ) {
 		my $count = $self->{words}->{$word};
@@ -452,26 +499,23 @@ sub cloud {
 			# While this text collides with any of the other placed texts, 
 			#   move it in an enlarging spiral around the image 
 			
-			# Start in the center
-			#my $this_x = $gd->width / 2;
-			#my $this_y = $gd->height / 2;
-			
-			# Make a spiral, TODO: probably need to somehow constrain or filter points that are generated outside the image dimensions
+			# Make a spiral
 			my $path = Math::PlanePath::TheodorusSpiral->new;
 			
 			# Get the boundary width and height for random initial placement (which is bounds of the first (biggest) string)
 			my ($rand_bound_w, $rand_bound_h) = @{$bboxes[0]}[2,3];
 			
 			# Get the initial starting point
-			#my ($this_x, $this_y) = $path->n_to_xy(1);
 			my ($this_x, $this_y) = $self->_new_coordinates($gd, $path, 1, $rand_bound_w, $rand_bound_h);
 			
-			# Put the spiral in the center of the image
-			#$this_x += $center_x;
-		  #$this_y += $center_y;
-			
 			my $collision = 1;
-			my $col_iter = 1;
+			my $col_iter = 1; # Iterator to pass to M::P::TheodorusSpiral get new X,Y coords
+			
+			# Within an area of 250k pixels, it seems to work okay.
+			#my $col_iter_increment = int($self->width * $self->height * 0.00002); # Increment to increase $col_iter by on each loop
+			my $col_iter_increment = 1;
+			$col_iter_increment = 1 if $col_iter_increment < 1; # Move it at least ONE iteration
+			
 			while ($collision) {
 				# New text's coords and width/height
 				# (x1,y1) lower left corner
@@ -499,43 +543,41 @@ sub cloud {
 				last if $collision == 0;
 				
 				# TESTING:
-				if ($col_iter % 10 == 0) {
+				if ($col_iter % 1 == 0 && $ENV{IWC_DEBUG} >= 2) {
 					my $hue = $col_iter;
-					while ($hue > 360) {
-						$hue = $hue - 360;
-					}
 					
-					#my ($r,$g,$b) = $self->_hex2rgb( (Color::Scheme->new->from_hue($hue)->colors())[0] );
-					#my $c = $gd->colorAllocate($r,$g,$b);
-					
-					#$gd->filledRectangle($this_x, $this_y, $this_x + 10, $this_y + 10, $c);
+				  my ($r,$g,$b) = $self->_hex2rgb( (Color::Scheme->new->from_hue($hue)->colors())[0] ); # hues can be over 360, they just wrap around the wheel
+					my $c = $gd->colorAllocate($r,$g,$b);
+										
+					#$gd->filledRectangle($this_x, $this_y, $this_x + 1, $this_y + 1, $c);
 					#$gd->string(gdGiantFont, $this_x, $this_y, $col_iter, $c);
 					
 					#$gd->setPixel($this_x, $this_y, $c);
 					
 					#my @bo = $text->bounding_box($this_x, $this_y, 0);
 					#$self->_stroke_bbox($gd, $c, @bo);
+					
+					$gd->colorDeallocate($c);
 				}
 				
-				$col_iter++;
+				$col_iter += $col_iter_increment;
 				
 				# Move text
 				my $new_loc  = 0;
 				while (! $new_loc) {
 					($this_x, $this_y) = $self->_new_coordinates($gd, $path, $col_iter, $rand_bound_w, $rand_bound_h);
 					
-					# ***Don't do this check right now
-					#$new_loc = 1;
-					#last;
-					
 					my ($newx, $newy, $newx2, $newy2) = ( $text->bounding_box($this_x, $this_y) )[6,7,2,3];
 					
-					if ($newx < 0 || $newx2 > $gd->width ||
-							$newy < 0 || $newy2 > $gd->height) {
+					if ($newx < $left_bound || $newx2 > $right_bound ||
+							$newy < $top_bound  || $newy2 > $bottom_bound) {
 								
 							#carp sprintf "New coordinates outside of image: (%s, %s), (%s, %s)", $newx, $newy, $newx2, $newy2;
-							$col_iter++;
-							last if $col_iter > 10_000;
+							$col_iter += $col_iter_increment;
+							if ($col_iter > 10_000) {
+								carp sprintf "New coordinates for '%s' outside of image: (%s, %s)", $text->get('text'), $newx, $newy if $ENV{IWC_DEBUG};
+								last;
+							}
 					}
 					else {
 							$new_loc = 1;
@@ -553,11 +595,18 @@ sub cloud {
 				#}
 			}
 			
+			# test draw
+			#my @bounding = $text->bounding_box($this_x, $this_y, 0);
+			#$self->_stroke_bbox($gd, $white, @bounding);
+			
+			# Backtrack the coordinates towards the center
+			($this_x, $this_y) = $self->_backtrack_coordinates($text, \@bboxes, $this_x, $this_y, $gd);
+			
 			$x = $this_x;
 			$y = $this_y;
 		}
 		
-		my @bounding = $text->draw($x, $y, 0);		
+		my @bounding = $text->draw($x, $y, 0);
 		#$self->_stroke_bbox($gd, undef, @bounding);
 		
 		my @rect = ($bounding[6], $bounding[7], $bounding[2] - $bounding[6], $bounding[3] - $bounding[7]);
@@ -568,8 +617,56 @@ sub cloud {
 	
 	my $total_area = sum @areas;
 	
+	$self->{words_changed} = 0; # reset the words changed flag
+	
 	# Return the image as PNG content
 	return $gd;
+}
+
+# Return the bounds of the image
+sub _image_bounds {
+	my $self = shift;
+	
+	my ($left_bound, $top_bound, $right_bound, $bottom_bound);
+	
+	# Make the boundaries for the words
+	my $pad = $self->{'border_padding'};
+	
+	# Handle zero-padding
+	if ($pad =~ /^0\%?$/) {
+		return (0, 0, $self->width, $self->height);
+	}
+	
+	# Pad width a percentage of the image size
+	if ($pad =~ /^\d+\%$/) {
+		my ($percentage) = $pad =~ /(\d+)/;
+		$percentage = $percentage / 100;
+		
+		$left_bound  = 0 + $self->width  * $percentage;
+		$top_bound   = 0 + $self->height * $percentage;
+		$right_bound  = $self->width -  $self->width  * $percentage;
+		$bottom_bound = $self->height - $self->height * $percentage;
+	}
+	else {
+		$left_bound  = 0 + $self->{'border_padding'};
+		$top_bound   = 0 + $self->{'border_padding'};
+		$right_bound  = $self->width  - $self->{'border_padding'};
+		$bottom_bound = $self->height - $self->{'border_padding'};
+	}
+	
+	return ($left_bound, $top_bound, $right_bound, $bottom_bound);
+}
+
+# Return the width and height of the image bounds
+sub _image_bounds_width_height() {
+	my $self = shift;
+	
+	my ($left_bound, $top_bound, $right_bound, $bottom_bound) = $self->_image_bounds();
+	
+	my $w = $right_bound - $left_bound;
+	my $h = $bottom_bound - $top_bound;
+	
+	return ($w, $h);
 }
 
 # Given an initial starting point, move 
@@ -579,6 +676,9 @@ sub _init_coordinates {
 	
 	croak "No X coordinate specified" if ! defined $x;
 	croak "No Y coordinate specified" if ! defined $y;
+	
+	# Make the boundaries for the words
+	my ($left_bound, $top_bound, $right_bound, $bottom_bound) = $self->_image_bounds();
 	
 	my $fits = 0;
 	my $c = 0;
@@ -594,8 +694,8 @@ sub _init_coordinates {
 		# Make sure the new coordinates aren't outside the bounds of the image!
 		my ($newx, $newy, $newx2, $newy2) = ( $text->bounding_box($try_x, $try_y) )[6,7,2,3];
 		
-		if ($newx < 0 || $newx2 > $gd->width ||
-				$newy < 0 || $newy2 > $gd->height) {
+		if ($newx < $left_bound || $newx2 > $right_bound ||
+				$newy < $top_bound  || $newy2 > $bottom_bound) {
 				
 				$fits = 0;
 		}
@@ -608,7 +708,11 @@ sub _init_coordinates {
 		
 		# Only try 50 times
 		$c++;
-		last if $c > 50;
+		
+		if ($c > 50) {
+			#carp "Tried over 50 times to fit a word";
+			last;
+		}
 	}
 	
 	return ($x, $y);
@@ -618,13 +722,15 @@ sub _init_coordinates {
 sub _new_coordinates {
 	my $self = shift;
 	
-	my @opts = validate_pos(@_,
-  	{ isa => 'GD::Image' },
-  	{ isa => 'Math::PlanePath::TheodorusSpiral' },
-  	{ type => SCALAR, regex => qr/^[-+]?\d+$/, },
-  	{ type => SCALAR, regex => qr/^\d+|\d+\.\d+$/, },
-  	{ type => SCALAR, regex => qr/^\d+|\d+\.\d+$/, },
-  );
+	#my @opts = validate_pos(@_,
+  #	{ isa => 'GD::Image' },
+  #	{ isa => 'Math::PlanePath::TheodorusSpiral' },
+  #	{ type => SCALAR, regex => qr/^[-+]?\d+$/, },
+  #	{ type => SCALAR, regex => qr/^\d+|\d+\.\d+$/, },
+  #	{ type => SCALAR, regex => qr/^\d+|\d+\.\d+$/, },
+  #);
+  
+  my @opts = @_;
 	
 	my ($gd, $path, $iteration, $bound_x, $bound_y) = @opts;
 	
@@ -640,60 +746,291 @@ sub _new_coordinates {
 	return ($x, $y);
 }
 
+# Given a text box's position and dimensions, try to backtrack it towards the center
+#   of the image until it collides with something. This should keep our words nicely
+#   nestled against each other
+sub _backtrack_coordinates {
+	my $self = shift;
+	
+	my $text = shift;
+	
+	# Arrayref of bounding boxes to check for collision against
+	my $colliders = shift;
+	
+	# X,Y coords to start with
+	my ($x, $y) = (shift, shift);
+	
+	my ($center_x, $center_y) = ($self->width / 2, $self->height / 2);
+	$center_x = $center_x - ($text->get('width') / 2);
+	$center_y = $center_y + ($text->get('height') / 4);
+	
+	my $collision = 0;
+	my $iter = 0;
+	while (! $collision) {
+		# Stop processing if we're within 1 pixel of the center of the iamge
+		if (abs($center_x - $x) <= 1 &&
+			  abs($center_y - $y) <= 1) {
+			
+			#printf "Coords (%s,%s) too near center (%s, %s), stopping on word '%s'\n",
+			#	$x, $y,
+			#	$center_x, $center_y, $text->get('text') if $ENV{IWC_DEBUG} >=2;
+			
+			last;
+		}
+		
+		# Position and dimensions of the text string
+		my ($a_x, $a_y, $a_x2, $a_y2) = ( $text->bounding_box($x, $y) )[6,7,2,3];
+		my ($a_w, $a_h) = ($a_x2 - $a_x, $a_y2 - $a_y);
+		
+		my $collision_with = [];
+		foreach my $b (@$colliders) {
+		    my ($b_x, $b_y, $b_w, $b_h) = @$b;
+		    
+		    # Upper left to lower right
+		    if ($self->_detect_collision(
+		    			$a_x, $a_y, $a_w, $a_h,
+		    			$b_x, $b_y, $b_w, $b_h)) {
+		    	
+		    	# Add this rectangle on to the ones we've had collisions with
+		    	$collision_with = [$b_x, $b_y, $b_w, $b_h];
+		    	
+		    	$collision = 1;
+		    	last;
+		    }
+		    else {
+		    	$collision = 0;
+		    }
+		}
+		
+		# If there was collision...
+		if ($collision == 1) {
+			# Get the sides that we collided with the other rectangle on
+			my @collision_sides = $self->_collision_sides($a_x, $a_y, $a_w, $a_h, @$collision_with);
+			
+			# If we only collided with one side, we should be able to move further along the other side,
+			#   i.e. if we collided only on the X axis we can still move closer on the Y axis
+			if (scalar @collision_sides == 1) {
+				# We collided on a Y-axis side, so we can move on the X-axis
+				if ($collision_sides[0] eq 'top' || $collision_sides[0] eq 'bottom') {
+					$x = ($x < $center_x) ? $x+1 : $x-1;
+				}
+				# We collided on a X-axis side, so we can move on the Y-axis
+				elsif ($collision_sides[0] eq 'left' || $collision_sides[0] eq 'right') {
+					$y = ($y < $center_y) ? $y+1 : $y-1;
+				}
+			}
+			# Total collision, stop moving!
+			elsif (scalar @collision_sides >= 2) {
+				last;
+			}
+		}
+		# No collision!	
+		else {
+			$x = ($x < $center_x) ? $x+1 : $x-1;
+			$y = ($y < $center_y) ? $y+1 : $y-1;
+		}
+		
+		#my @bbox = $text->bounding_box($x, $y, 0);
+		#$self->_stroke_bbox($gd, $gd->colorClosest(255, 255, 255), @bbox) if $iter % 10 == 0;
+		
+		$iter++;
+	}
+	
+	#printf "New xy: $x, $y\n";
+	
+	return $x, $y;
+}
+
+# Return the minimum area we need to have to fit all the words based on the _max_font_size
+sub _playing_field_area {
+	my $self = shift;
+	
+	my ($max_font_size, $lastfont) = $self->_max_font_size();
+	my $word_scalings = $self->_word_scalings();
+	
+	my $words = $self->words();
+	
+	my $area = 0;
+	
+	# Test GD object
+	my $text_gd = GD::Image->new();
+	
+	# Get the area 
+	foreach my $word (keys %$words) {
+		my $text = GD::Text::Align->new($text_gd);
+		$text->set_text($word);
+		
+		my $fontsize = $word_scalings->{ $word } * $max_font_size;
+		$fontsize = $max_font_size if $fontsize > $max_font_size;
+		$text->set_font($lastfont, $fontsize);
+		
+		my $word_area = $text->get('width') * $text->get('height');
+		
+		$area += $word_area;
+	}
+	
+	return $area;
+}
+
+# Overall scaling we have to use to get all the words to fit in the playing field
+sub _view_scaling {
+	my $self = shift;
+	
+	# Get the total area we have to use
+	my $pf_area = $self->_playing_field_area();
+	
+	# Get the ratio of width to height
+	my ($w, $h) = $self->_image_bounds_width_height();
+	#my $wh_ratio = $w / $h;
+	
+	#my $area_sq = sqrt($pf_area);
+	#my $area_w = $area_sq * $wh_ratio;
+	#my $area_h = $area_sq / $wh_ratio;
+	
+	my $area = $w * $h;
+	
+	my $scaling = $area / $pf_area;
+}
+
 # Return the maximum font-size this image can use
+#   optionally also return the font that caused us the most issues
+#   (i.e. has the largest size)
 sub _max_font_size {
 	my $self = shift;
 	
-	# Font size we'll return (start with 25% of the image height);
-	my $fontsize = $self->_init_max_font_size();
+	# If we already have a max font size and the words we are using haven't changed,
+	#   return the saved max font size
+	return $self->{max_font_size} if $self->{max_font_size} && ! $self->{words_changed};
 	
-	# Get the smallest side of the image
-	#my $min_edge_px = $self->{image_size}->[0] < $self->{image_size}->[1] ? $self->{image_size}->[0] : $self->{image_size}->[1];
-	#my $min_points = $self->pixels_to_points($min_edge_px);
+	# Font size we'll return (start with 25% of the image height);
+	my $init_fontsize = $self->_init_max_font_size();
+	my $fontsize = $init_fontsize;
 	
 	# Image width and heigth
-	my ($w, $h) = $self->{image_size}->[0,1];
+	#my ($w, $h) = ($self->width, $self->height);
 	
-	# Get the longest word
+	# Get the image bounds
+	my ($left_bound, $top_bound, $right_bound, $bottom_bound) = $self->_image_bounds();
+	
+	# Get the word scaling factors
+	my $scalings = $self->_word_scalings();
+	
+	# Get the longest word (length * scaling is being used to determine it, but there may be a better way)
 	my $max_word = "";
-	foreach my $word (keys %{ $self->{words} }) {
-		$max_word = $word if length($word) > length($max_word);
+	foreach my $word (keys %{ $self->words() }) {
+		if (! $max_word) { $max_word = $word; next; } # init $max_word
+		
+		if (length($word) * $scalings->{ $word } > length($max_word) * $scalings->{ $max_word }) {
+			$max_word = $word;
+		}
 	}
 	
+	#printf "Using max word %s\n", $max_word;
+	
 	# Create the text object
-	my $t = new GD::Text::Align(new GD::Image);
+	my $t = new GD::Text::Align( GD::Image->new() );
 	$t->set_text($max_word);
 	
 	# Get every possible font we can use
 	my @fonts = $self->_get_all_fonts();
 	
+	# The last font that caused us size problems
+	my $lastfont = "";
+	
 	while ($fontsize > 0) {
 		my $toobig = 0;
 		
+		# The font size we try must include the scaling
+		my $tryfontsize = $fontsize * $scalings->{ $max_word };
+		
+		# If the size exceeds our "max", set it back to the max. This is a hacky way
+		# of making the sizes scale right but not excessively at the top end.
+		if ($tryfontsize > $init_fontsize) {
+			$tryfontsize = $init_fontsize;
+		}
+		
 		# Go through every font
 		foreach my $font (@fonts) {
-			# Set the font on this text object
-			$t->set_font($font, $fontsize);
+			$lastfont = $font if ! $lastfont;
 			
-			# The text box is wider than the image
-			if ($t->get('width') > $w) {
+			# Set the font on this text object
+			$t->set_font($font, $tryfontsize);
+			
+			#printf "Width is %s (max $w) at size %s in font %s\n", $t->get('width'), $tryfontsize, $font;
+			
+			# The text box is wider than the image bounds in this font, don't check the other fonts
+			if ($t->get('width') > $right_bound - $left_bound) {
 				$toobig = 1;
+				$lastfont = $font;
 				last;
 			}
 		}
 		
+		# If the text box wasn't too big, we've found our font size
 		last if ! $toobig;
 		
+		# Decrease the font size for next iteration
 		$fontsize--;
 	}
 	
-	return $fontsize;
+	# Return the font size INCLUDING the scaling, because it will be scaled down
+	#   in cloud()
+	my $fontsize_with_scaling = $fontsize * $scalings->{ $max_word };
+	
+	#if ($fontsize_with_scaling > $init_fontsize) {
+	#	carp sprintf "Fontsize %s bigger than init fontsize %s, reverting", $fontsize_with_scaling, $init_fontsize if $ENV{IWC_DEBUG};
+	#	$fontsize_with_scaling = $init_fontsize;
+	#}
+	
+	# Save the max font size so we can reuse it whenever cloud() is called,
+	#   without running this method again
+	$self->{max_font_size} = $fontsize_with_scaling;
+	
+	return wantarray ? ($fontsize_with_scaling, $lastfont) : $fontsize_with_scaling;
 }
 
-# Intial maximum font size is the 1/4 the heigth of the image
+# Initial maximum font size is the 1/4 the heigth of the image
 sub _init_max_font_size {
 	my $self = shift;
-	return $self->_pixels_to_points($self->{image_size}->[1] * .25);
+	
+	return $self->_pixels_to_points($self->width * .25);
+}
+
+# The minimum font size to use 
+sub _min_font_size {
+	my $self = shift;
+	
+	# Get the image bound dimensions
+	my ($w, $h) = $self->_image_bounds_width_height();
+	
+	# The minimum font size is 0.8% of the image bounds height, seems to work nicely
+	return $self->_pixels_to_points($h * 0.00875);
+}
+
+# Return a hashref of words with their associated scaling
+sub _word_scalings {
+	my $self = shift;
+	
+	# Get the words sorted by their count
+	my @word_keys = sort { $self->{words}->{$b} <=> $self->{words}->{$a} } keys %{ $self->words() };
+	
+	my $sloop = 0;
+	my %word_scalings = map { $sloop++; $_ => (1.75 / $sloop) } @word_keys;
+	
+	return \%word_scalings;
+}
+
+# Return a hashref of words with their scaled font sizes
+sub _word_font_sizes {
+	my $self = shift;
+	
+	my $max_font_size = $self->_max_font_size();
+	
+	my $word_scalings = $self->_word_scalings();
+	
+	my %word_sizes = map { $_ => $word_scalings->{$_} * $max_font_size } keys %{ $self->words() };
+	
+	return \%word_sizes;
 }
 
 # Return a single font
@@ -731,7 +1068,7 @@ sub _get_all_fonts {
 	elsif ($self->{'font'} && -d $self->{'font_path'}) {
 		@fonts = ($self->{'font'});
 	}
-	# ...or use a random font
+	# ...or all the fonts
 	elsif (scalar @{$self->{'fonts'}} > 0) {
 		@fonts = @{$self->{'fonts'}};
 	}
@@ -761,17 +1098,19 @@ sub _random_colors {
 	my $self = shift;
 	
 	my %opts = validate(@_, {
-    	  hue       => { type => SCALAR, optional => 1, default => rand(359)  },
-    	  scheme    => { type => SCALAR, optional => 1, default => 'analogic' },
-    	  variation => { type => SCALAR, optional => 1, default => 'default'  },
+		hue       => { type => SCALAR, optional => 1, default => int(rand(359))  },
+		scheme    => { type => SCALAR, optional => 1, default => 'analogic' },
+		variation => { type => SCALAR, optional => 1, default => 'default'  },
   });
+  
+  carp sprintf "Color scheme hue: %s", $opts{'hue'} if $ENV{IWC_DEBUG};
 	
 	my @rand_colors = map { [$self->_hex2rgb($_)] } Color::Scheme->new
 		->from_hue( $opts{'hue'} )
 		->scheme( $opts{'scheme'} )
 		->variation( $opts{'variation'} )
 		->colors();
-		
+	
 	return @rand_colors;
 }
 
@@ -839,18 +1178,83 @@ sub add_stop_words {
 sub _detect_collision {
 	my $self = shift;
 	
-	my ($a_x, $a_y, $a_w, $a_h,
-			$b_x, $b_y, $b_w, $b_h) = @_;
+	#my ($a_x, $a_y, $a_w, $a_h,
+	#		$b_x, $b_y, $b_w, $b_h) = @_;
 	
-	if (
-		!( ($b_x > $a_x + $a_w) || ($b_x + $b_w < $a_x) ||
-		   ($b_y > $a_y + $a_h) || ($b_y + $b_h < $a_y) )) {
-		
+	#if (
+	#	!( ($b_x > $a_x + $a_w) || ($b_x + $b_w < $a_x) ||
+	#	   ($b_y > $a_y + $a_h) || ($b_y + $b_h < $a_y) )) {
+	#
+	# return 1;
+	#}
+	
+	# If the two rectangle collide on the both planes then they intersect
+	if ($self->_detect_x_collision(@_) && $self->_detect_y_collision(@_)) {
 		return 1;
 	}
 	else {
 		return 0;
 	}
+}
+
+# Detect a collision on the X plane
+sub _detect_x_collision {
+	my $self = shift;
+	
+	my ($a_x, $a_y, $a_w, $a_h,
+			$b_x, $b_y, $b_w, $b_h) = @_;
+			
+	if (! (($b_x > $a_x + $a_w) || ($b_x + $b_w < $a_x)) ) {
+		return 1;
+	}
+	else {
+		return 0;
+	}
+}
+
+# Detect a collision on the Y plane
+sub _detect_y_collision {
+	my $self = shift;
+	
+	my ($a_x, $a_y, $a_w, $a_h,
+			$b_x, $b_y, $b_w, $b_h) = @_;
+			
+	if (! (($b_y > $a_y + $a_h) || ($b_y + $b_h < $a_y)) ) {
+		return 1;
+	}
+	else {
+		return 0;
+	}
+}
+
+# Return which side of object A collides with object B
+sub _collision_sides {
+	my $self = shift;
+			
+	my @sides = ();
+	
+	return @sides if ! $self->_detect_collision(@_);
+	
+	my ($a_x, $a_y, $a_w, $a_h,
+			$b_x, $b_y, $b_w, $b_h) = @_;
+	
+	if (! ($b_x + $b_w > $a_x + $a_w)) {
+		push(@sides, 'right');
+	}
+	
+	if (! ($b_x + $b_w < $a_x + $a_w)) {
+		push(@sides, 'left');
+	}
+	
+	if (! ($b_y + $b_h > $a_y + $a_h)) {
+		push(@sides, 'bottom');
+	}
+	
+	if (! ($b_y + $b_h < $a_y + $a_h)) {
+		push(@sides, 'top');
+	}
+	
+	return @sides;
 }
 
 # Stroke the outline of a bounding box
@@ -880,6 +1284,23 @@ sub _random_int_between {
 	return $min + int rand(1 + $max - $min);
 }
 
+=head2 width()
+
+Return wordcloud image width
+
+=cut
+sub width {
+	return shift->{image_size}->[0];
+}
+
+=head2 height()
+
+Return wordcloud image height
+
+=cut
+sub height {
+	return shift->{image_size}->[1];
+}
 
 =head1 AUTHOR
 

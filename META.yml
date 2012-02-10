@@ -4,12 +4,12 @@ author:
   - 'Brian Hann, C<< <bhann at cpan.org> >>'
   - 'Brian Hann <bhann@cpan.org>'
 build_requires:
-  ExtUtils::MakeMaker: 6.62
+  ExtUtils::MakeMaker: 6.55
   Test::Fatal: 0
   Test::More: 0
   Test::Warn: 0
 configure_requires:
-  ExtUtils::MakeMaker: 6.62
+  ExtUtils::MakeMaker: 6.55
 distribution_type: module
 dynamic_config: 1
 generated_by: 'Module::Install version 1.04'
@@ -39,4 +39,4 @@ resources:
   bugtracker: https://github.com/c0bra/image-wordcloud-perl/issues
   license: http://dev.perl.org/licenses/
   repository: https://github.com/c0bra/image-wordcloud-perl
-version: 0.02_01
+version: 0.02_03
