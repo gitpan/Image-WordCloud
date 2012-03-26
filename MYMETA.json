@@ -51,7 +51,7 @@
          }
       }
    },
-   "release_status" : "testing",
+   "release_status" : "stable",
    "resources" : {
       "bugtracker" : {
          "web" : "https://github.com/c0bra/image-wordcloud-perl/issues"
@@ -63,5 +63,5 @@
          "url" : "https://github.com/c0bra/image-wordcloud-perl"
       }
    },
-   "version" : "0.02_05"
+   "version" : "0.02"
 }

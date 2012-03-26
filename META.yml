@@ -39,4 +39,4 @@ resources:
   bugtracker: https://github.com/c0bra/image-wordcloud-perl/issues
   license: http://dev.perl.org/licenses/
   repository: https://github.com/c0bra/image-wordcloud-perl
-version: 0.02_05
+version: 0.02
